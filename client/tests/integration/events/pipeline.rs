@@ -8,6 +8,8 @@ use test_network::*;
 
 use super::Configuration;
 
+// Needed to re-enable ignored tests.
+#[allow(dead_code)]
 const PEER_COUNT: usize = 7;
 
 #[test]
