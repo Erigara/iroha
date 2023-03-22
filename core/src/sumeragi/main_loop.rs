@@ -315,8 +315,12 @@ impl<F: FaultInjection> SumeragiWithFault<F> {
             state.current_topology.is_consensus_required(),
             "Only peer in network, yet required to receive genesis topology. This is a configuration error."
         );
+        let mut last_connect_peers_instant = Instant::now();
         loop {
-            self.connect_peers(&state.current_topology);
+            if last_connect_peers_instant.elapsed().as_millis() > 1000 {
+                self.connect_peers(&state.current_topology);
+                last_connect_peers_instant = Instant::now();
+            }
             std::thread::sleep(Duration::from_millis(50));
             early_return(shutdown_receiver)?;
             // we must connect to peers so that our block_sync can find us

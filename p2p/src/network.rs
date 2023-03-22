@@ -57,6 +57,8 @@ where
     listen_addr: String,
     /// [`Peer`]s performing a `handshake`
     pub new_peers: HashMap<ConnectionId, Addr<Peer<T, K, E>>>,
+    /// New [`Peer`]s [`PublicKey`]s for deduplication
+    pub new_peers_pub_keys: HashSet<PublicKey>,
     /// Current [`Peer`]s in [`Peer::Ready`] state.
     pub peers: HashMap<PublicKey, RefPeer<T, K, E>>,
     /// [`HashSet`] of [`String`] which should represent the [`std::net::IpAddr`] of the untrusted remote [`Peer`]:
@@ -97,6 +99,7 @@ where
         Ok(Self {
             listen_addr,
             new_peers: HashMap::new(),
+            new_peers_pub_keys: HashSet::new(),
             peers: HashMap::new(),
             untrusted_peers: HashSet::new(),
             listener: Some(listener),
@@ -215,10 +218,16 @@ where
             return;
         }
 
+        if self.new_peers_pub_keys.contains(&msg.peer.public_key) {
+            debug!(peer = %msg.peer, "Already connecting to peer");
+            return;
+        }
+
         debug!(
             listen_addr = %self.listen_addr, peer.id.address = %msg.peer.address,
             "Creating new peer actor",
         );
+        self.new_peers_pub_keys.insert(msg.peer.public_key.clone());
         self.untrusted_peers.remove(&ip(&msg.peer.address));
         let peer_to_key_exchange = match Peer::new_to(
             PeerId::new(&msg.peer.address, &self.public_key),
@@ -228,7 +237,8 @@ where
         {
             Ok(peer) => peer,
             Err(error) => {
-                warn!(%error, "Unable to create peer");
+                warn!(%error, peer=%msg.peer, "Unable to create peer");
+                self.new_peers_pub_keys.remove(&msg.peer.public_key);
                 return;
             }
         };
@@ -311,6 +321,7 @@ where
         match msg {
             Connected(id, conn_id) => {
                 if let Some(addr) = self.new_peers.remove(&conn_id) {
+                    self.new_peers_pub_keys.remove(&id.public_key);
                     let peer = RefPeer {
                         addr,
                         conn_id,
@@ -330,6 +341,7 @@ where
 
                 // In case the peer is new and has failed to connect
                 self.new_peers.remove(&conn_id);
+                self.new_peers_pub_keys.remove(&id.public_key);
 
                 self.broker.issue_send(StopSelf::Peer(conn_id)).await;
                 info!(
