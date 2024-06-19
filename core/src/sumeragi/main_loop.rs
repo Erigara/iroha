@@ -540,6 +540,14 @@ impl Sumeragi {
                             "Received irrelevant or outdated block (neither `peer_height` nor `peer_height + 1`)."
                         );
                     }
+                    Err((block, BlockSyncError::SameBlock)) => {
+                        debug!(
+                            peer_id=%self.peer_id,
+                            role=%self.role(),
+                            hash=%block.hash(),
+                            "Other peer sent block already committed by this peer",
+                        );
+                    }
                 }
             }
             (BlockMessage::BlockCreated(block_created), Role::ValidatingPeer) => {
@@ -1229,6 +1237,7 @@ enum BlockSyncError {
         peer_height: usize,
         block_height: usize,
     },
+    SameBlock,
 }
 
 fn handle_block_sync<'state, F: Fn(PipelineEventBox)>(
@@ -1238,6 +1247,10 @@ fn handle_block_sync<'state, F: Fn(PipelineEventBox)>(
     genesis_account: &AccountId,
     handle_events: &F,
 ) -> Result<BlockSyncOk<'state>, (SignedBlock, BlockSyncError)> {
+    if Some(block.hash()) == state.view().latest_block_hash() {
+        return Err((block, BlockSyncError::SameBlock));
+    }
+
     let block_height = block
         .header()
         .height
@@ -1662,5 +1675,43 @@ mod tests {
                 }
             ))
         ))
+    }
+
+    #[test]
+    async fn block_sync_same_block() {
+        let chain_id = ChainId::from("00000000-0000-0000-0000-000000000000");
+
+        let (leader_public_key, leader_private_key) = KeyPair::random().into_parts();
+        let peer_id = PeerId::new("127.0.0.1:8080".parse().unwrap(), leader_public_key);
+        let topology = Topology::new(vec![peer_id]);
+        let (state, kura, block, genesis_public_key) =
+            create_data_for_test(&chain_id, &topology, &leader_private_key);
+
+        let mut state_block = state.block();
+        let committed_block = ValidBlock::validate(
+            block.clone(),
+            &topology,
+            &chain_id,
+            &genesis_public_key,
+            &mut state_block,
+        )
+        .unpack(|_| {})
+        .unwrap()
+        .commit(&topology)
+        .unpack(|_| {})
+        .expect("Block is valid");
+        let _events = state_block.apply_without_execution(&committed_block);
+        state_block.commit();
+        kura.store_block(committed_block);
+        let latest_block = state
+            .view()
+            .latest_block()
+            .expect("INTERNAL BUG: No latest block");
+        let latest_block_height = latest_block.header().height;
+        assert_eq!(latest_block_height, 2);
+
+        // Try the same block
+        let result = handle_block_sync(&chain_id, block, &state, &genesis_public_key, &|_| {});
+        assert!(matches!(result, Err((_, BlockSyncError::SameBlock))))
     }
 }
